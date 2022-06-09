@@ -32,7 +32,7 @@ static hp_t *list_append(hp_t **head, uintptr_t ptr) {
   if (!new)
     return NULL;
 
-  new->active_ = 1;
+  new->active_ = active_t;
   new->ptr = ptr;
   hp_t *old = atomic_load(head);
 
@@ -49,7 +49,6 @@ static hp_t *list_append(hp_t **head, uintptr_t ptr) {
 hp_t *list_insert_or_append(hp_t **head, uintptr_t ptr) {
   hp_t *node;
   bool need_alloc = true;
-
   LIST_ITER(head, node) {
     uintptr_t expected = atomic_load(&node->ptr);
     if (expected == 0 && atomic_cas(&node->active_, &active_f, &active_t)) {
@@ -58,7 +57,6 @@ hp_t *list_insert_or_append(hp_t **head, uintptr_t ptr) {
       break;
     }
   }
-
   if (need_alloc)
     node = list_append(head, ptr);
 
@@ -72,13 +70,11 @@ bool list_remove(hp_t **head, uintptr_t ptr) {
 
   LIST_ITER(head, node) {
     uintptr_t expected = atomic_load(&node->ptr);
-    if (expected == ptr) {
-      atomic_cas(&node->active_, &active_t, &active_f);
+    if (expected == ptr && atomic_cas(&node->active_, &active_t, &active_f)) {
       atomic_cas(&node->ptr, &expected, &nullptr);
       return true;
     }
   }
-
   return false;
 }
 
@@ -122,7 +118,6 @@ void list_free(hp_t **head) {
 
 typedef struct {
   hp_t *pointers;
-  // hp_t *retired;
   void (*deallocator)(void *);
 } domain_t;
 
@@ -210,7 +205,7 @@ static void cleanup_ptr(domain_t *dom, wconfig_t *wconfig, uintptr_t ptr,
     wconfig->r_count += 1;
   } else { /* Spin until all readers are done, then deallocate */
     while (list_contains(&dom->pointers, ptr))
-      ;
+      usleep(10);
     dom->deallocator((void *)ptr);
   }
 }
@@ -345,7 +340,7 @@ static void *writer_thread(void *arg) {
     print_config("updating config", new_config);
 
     swap(config_dom, wconfig, (uintptr_t *)&shared_config,
-         (uintptr_t)new_config, 0);
+         (uintptr_t)new_config, 1);
     print_config("updated config ", cloned_config);
     if (wconfig->r_count > r_limit) {
       cleanup(config_dom, wconfig, 1);
